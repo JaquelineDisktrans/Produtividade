@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Controle CS — Trocas Disktrans</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/dashboard.css">
+</head>
+<body>
+  <div class="app-shell">
+    <main class="main-content">
+      <header class="topbar">
+        <div class="brand-lockup"><div class="brand-mark">CS</div><div><p class="eyebrow">PAINEL OPERACIONAL</p><h1>Controle de atendimento</h1><p id="subtitle" class="subtitle">Carregando dados da caixa Trocas…</p></div></div>
+        <div class="top-actions"><span id="generated" class="last-update">Atualizando…</span><button id="refresh" class="btn btn-outline" type="button">Atualizar dados</button></div>
+      </header>
+
+      <nav class="main-nav" aria-label="Navegação principal">
+        <button class="side-link active" data-view="overview"><span>01</span> Executivo</button>
+        <button class="side-link" data-view="reasons"><span>02</span> Motivos & gargalos</button>
+        <button class="side-link" data-view="cases"><span>03</span> Atendimentos</button>
+      </nav>
+
+      <div id="error" class="alert" role="alert" hidden></div>
+
+      <section id="view-overview" class="view" aria-labelledby="overview-title">
+        <h2 id="overview-title" class="sr-only">Visão geral</h2>
+        <div class="kpi-grid">
+          <article class="kpi kpi-dark"><span class="kpi-label">Casos consolidados</span><strong id="k-cases">—</strong><span class="kpi-note">conversas únicas</span></article>
+          <article class="kpi"><span class="kpi-label">Recebidos</span><strong id="k-received">—</strong><span class="kpi-note">no período analisado</span></article>
+          <article class="kpi"><span class="kpi-label">Taxa de resposta</span><strong id="k-response">—</strong><span id="k-response-note" class="kpi-note">—</span></article>
+          <article class="kpi kpi-warning"><span class="kpi-label">Sem resposta aparente</span><strong id="k-unanswered">—</strong><span class="kpi-note">backlog estimado</span></article>
+          <article class="kpi"><span class="kpi-label">1ª resposta média</span><strong id="k-avg">—</strong><span id="k-median" class="kpi-note">mediana —</span></article>
+        </div>
+
+        <div class="insight-strip"><div class="insight-icon">!</div><div><strong id="insight-title">Leitura executiva</strong><p id="insight-text">Os dados da operação serão exibidos aqui.</p></div></div>
+
+        <div class="grid-2">
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">DEMANDA</span><h3>Volume por mês</h3></div><span class="legend-dot blue"></span></div><div id="monthly-chart" class="bar-chart" role="img" aria-label="Volume de casos por mês"></div></article>
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">TEMPO DE RESPOSTA</span><h3>Distribuição de SLA</h3></div><span class="panel-caption">casos respondidos</span></div><div id="sla-chart" class="sla-list"></div></article>
+        </div>
+
+        <div class="grid-2 lower-grid">
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">RITMO</span><h3>Quando os casos entram</h3></div></div><div id="weekday-chart" class="weekday-chart"></div></article>
+          <article class="panel"><div class="panel-head"><div><span class="panel-kicker">ATENÇÃO</span><h3>Principais sinais de risco</h3></div></div><div id="risk-list" class="risk-list"></div></article>
+        </div>
+      </section>
+
+      <section id="view-reasons" class="view" aria-labelledby="reasons-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">DIAGNÓSTICO</p><h2 id="reasons-title">Motivos e gargalos</h2></div><span class="tag">classificação heurística</span></div>
+        <div class="grid-2"><article class="panel"><div class="panel-head"><div><span class="panel-kicker">CONTATOS</span><h3>Motivos mais frequentes</h3></div></div><div id="reasons-chart" class="horizontal-bars"></div></article><article class="panel"><div class="panel-head"><div><span class="panel-kicker">ORIGEM PROVÁVEL</span><h3>Gargalos operacionais</h3></div></div><div id="bottleneck-chart" class="horizontal-bars"></div></article></div>
+        <div class="grid-2 lower-grid"><article class="panel"><div class="panel-head"><div><span class="panel-kicker">CONCENTRAÇÃO</span><h3>Clientes / domínios</h3></div></div><div id="clients-table" class="mini-table"></div></article><article class="panel"><div class="panel-head"><div><span class="panel-kicker">CONCENTRAÇÃO</span><h3>Unidades identificadas</h3></div></div><div id="units-table" class="mini-table"></div></article></div>
+        <div class="method-note"><strong>Como interpretar:</strong> motivo, gargalo, reclamação e contato evitável foram extraídos por sinais textuais. Use-os como triagem e valide os casos críticos na base estruturada antes de tomar decisões.</div>
+      </section>
+
+      <section id="view-cases" class="view" aria-labelledby="cases-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">FILA CONSOLIDADA</p><h2 id="cases-title">Atendimentos</h2></div><div class="case-controls"><label for="case-search" class="sr-only">Buscar atendimento</label><input id="case-search" type="search" placeholder="Buscar assunto, cliente ou unidade…"><select id="case-status" aria-label="Filtrar por status"><option value="todos">Todos os status</option><option value="Respondido">Respondidos</option><option value="Sem resposta">Sem resposta</option></select></div></div>
+        <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Data</th><th>Cliente / unidade</th><th>Assunto</th><th>Motivo</th><th>Status</th><th>1ª resposta</th><th>Interações</th></tr></thead><tbody id="cases-body"></tbody></table></div><div id="case-count" class="table-foot"></div></div>
+      </section>
+      <footer class="footer"><span>Controle CS · Trocas Disktrans</span><span>Dados locais · atualização sob demanda</span></footer>
+    </main>
+  </div>
+  <script src="js/dashboard.js" defer></script>
+</body>
+</html>

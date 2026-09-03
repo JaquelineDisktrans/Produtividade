@@ -1,0 +1,4 @@
+# Dados locais da caixa de e-mail (nao versionar)
+saida/
+__pycache__/
+*.py[cod]
