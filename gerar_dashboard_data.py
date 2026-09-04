@@ -33,8 +33,9 @@ def main():
     casos = carregar_casos()
     linhas = analisar_casos(casos)
     with sqlite3.connect(OUT / "outlook_atendimento.sqlite") as conn:
-        recebidos_caixa = conn.execute("SELECT COUNT(*) FROM mensagens WHERE direcao='recebido'").fetchone()[0]
-        enviados_caixa = conn.execute("SELECT COUNT(*) FROM mensagens WHERE direcao='enviado'").fetchone()[0]
+        wf = "AND lower(assunto_normalizado) NOT LIKE '%workflow%' AND lower(assunto_original) NOT LIKE '%workflow%'"
+        recebidos_caixa = conn.execute(f"SELECT COUNT(*) FROM mensagens WHERE direcao='recebido' {wf}").fetchone()[0]
+        enviados_caixa = conn.execute(f"SELECT COUNT(*) FROM mensagens WHERE direcao='enviado' {wf}").fetchone()[0]
 
     # Trava de seguranca: nao sobrescreve um painel bom com uma base vazia
     # (ex.: coleta interrompida). Preserva o dashboard_data.json anterior.

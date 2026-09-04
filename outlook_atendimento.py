@@ -81,6 +81,14 @@ def garantir_schema(conn: sqlite3.Connection):
     conn.commit()
 
 
+def eh_workflow(assunto: str | None) -> bool:
+    """E-mails automaticos de WORKFLOW (notificacoes de sistema) nao sao atendimento.
+
+    Sao excluidos da base e de todos os relatorios/painel.
+    """
+    return "workflow" in (assunto or "").casefold()
+
+
 def normalizar_assunto(assunto: str | None) -> str:
     """Remove prefixos comuns para consolidar RE:, RES:, FW: e ENC:."""
     texto = (assunto or "(sem assunto)").strip()
@@ -268,6 +276,10 @@ def coletar_pasta(
             if data_fim and data_naive > data_fim:
                 continue
             assunto = item.Subject or "(sem assunto)"
+            if eh_workflow(assunto):
+                # Notificacao automatica de WORKFLOW: nao entra na base.
+                ignorados += 1
+                continue
             conversa_id = (item.ConversationID or "").strip()
             # Sem ConversationID, o assunto normalizado vira chave de reserva.
             chave = conversa_id or "assunto:" + normalizar_assunto(assunto).casefold()
@@ -453,6 +465,8 @@ def exportar(conn: sqlite3.Connection, pasta_saida: Path):
         "SELECT conversa_id, direcao, assunto_original, assunto_normalizado, data_hora, remetente "
         "FROM mensagens ORDER BY conversa_id, data_hora"
     ).fetchall()
+    # Cinto de seguranca: exclui WORKFLOW mesmo em bases coletadas antes do filtro.
+    registros = [r for r in registros if not (eh_workflow(r[2]) or eh_workflow(r[3]))]
     conversas = defaultdict(list)
     for registro in registros:
         conversas[registro[0]].append(registro)
@@ -524,11 +538,12 @@ def exportar(conn: sqlite3.Connection, pasta_saida: Path):
     for linha in linhas_conversas:
         por_mes[linha["mes_ano"]].append(linha)
     # e-mails recebidos/enviados por mes direto da base (nao so de conversas com recebido)
+    filtro_wf = "AND lower(assunto_normalizado) NOT LIKE '%workflow%' AND lower(assunto_original) NOT LIKE '%workflow%'"
     recebidos_mes = dict(conn.execute(
-        "SELECT substr(data_hora,1,7), COUNT(*) FROM mensagens WHERE direcao='recebido' GROUP BY 1"
+        f"SELECT substr(data_hora,1,7), COUNT(*) FROM mensagens WHERE direcao='recebido' {filtro_wf} GROUP BY 1"
     ).fetchall())
     enviados_mes = dict(conn.execute(
-        "SELECT substr(data_hora,1,7), COUNT(*) FROM mensagens WHERE direcao='enviado' GROUP BY 1"
+        f"SELECT substr(data_hora,1,7), COUNT(*) FROM mensagens WHERE direcao='enviado' {filtro_wf} GROUP BY 1"
     ).fetchall())
     todos_meses = sorted(set(por_mes) | set(recebidos_mes) | set(enviados_mes))
     linhas_mensal = []

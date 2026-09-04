@@ -144,7 +144,9 @@ def qualidade_resposta(texto: str) -> tuple[int, dict[str, bool]]:
 def carregar_casos() -> list[dict]:
     caminho = OUT / "casos_para_analise.jsonl"
     with caminho.open(encoding="utf-8") as arquivo:
-        return [json.loads(linha) for linha in arquivo if linha.strip()]
+        casos = [json.loads(linha) for linha in arquivo if linha.strip()]
+    # Exclui notificacoes automaticas de WORKFLOW (nao sao atendimento).
+    return [c for c in casos if "workflow" not in (c.get("assunto_consolidado", "") or "").casefold()]
 
 
 def analisar_casos(casos: list[dict]) -> list[dict]:
