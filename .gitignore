@@ -2,3 +2,6 @@
 saida/
 __pycache__/
 *.py[cod]
+
+# Exceto o JSON agregado usado pelo painel online
+!saida/dashboard_data.json
