@@ -170,7 +170,7 @@ function viewExecutivo(){
 }
 function tabelaCasos(rows){
   if(!rows.length) return '<p class="state">Sem atendimentos.</p>';
-  return `<div class="scroll"><table><thead><tr><th>ID</th><th>Data</th><th>Cliente</th><th>Unidade</th><th>Motivo</th><th>Status</th></tr></thead><tbody>${rows.map(c=>`<tr><td style="font-family:monospace;font-size:.78rem;color:var(--muted)">${esc(c.id)}</td><td class="num" style="text-align:left">${fmtData(c.data)}</td><td>${esc(c.cliente)}</td><td style="color:var(--muted)">${esc(c.unidade)}</td><td>${esc(c.motivo)}</td><td>${statusBadge(c.status)}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="scroll"><table><thead><tr><th>Assunto</th><th>Data</th><th>Cliente</th><th>Unidade</th><th>Motivo</th><th>Status</th></tr></thead><tbody>${rows.map(c=>`<tr><td style="font-family:monospace;font-size:.78rem;color:var(--muted)">${esc(c.assunto)}</td><td class="num" style="text-align:left">${fmtData(c.data)}</td><td>${esc(c.cliente)}</td><td style="color:var(--muted)">${esc(c.unidade)}</td><td>${esc(c.motivo)}</td><td>${statusBadge(c.status)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 function viewMotivos(){
   const casos=DATA.casos||[],motivos=DATA.motivos||[],garg=DATA.gargalos||[];
