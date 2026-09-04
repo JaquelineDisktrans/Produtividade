@@ -1,0 +1,38 @@
+{
+  "meta": {
+    "titulo": "Controle CS - Trocas Disktrans",
+    "caixa": "trocas@disktrans.com.br",
+    "periodo": "Ainda não atualizado",
+    "gerado_em": "2026-09-04T00:34:11.634292+00:00",
+    "observacao": "Execute python gerar_dashboard_data.py localmente e envie saida/dashboard_data.json para ver os dados reais."
+  },
+  "kpis": {
+    "casos": 0,
+    "recebidos": 0,
+    "enviados": 0,
+    "respondidos": 0,
+    "sem_resposta": 0,
+    "taxa_resposta": "0",
+    "tempo_medio": null,
+    "tempo_medio_legivel": "Não identificado",
+    "tempo_mediano": null,
+    "tempo_mediano_legivel": "Não identificado",
+    "p75": null,
+    "p90": null,
+    "p95": null,
+    "cobranca": 0,
+    "evitaveis": 0
+  },
+  "volume": {
+    "diario": [],
+    "semanal": [],
+    "mensal": [],
+    "dia_semana": [],
+    "hora": []
+  },
+  "motivos": [],
+  "gargalos": [],
+  "clientes": [],
+  "unidades": [],
+  "casos": []
+}
