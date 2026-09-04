@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -651,6 +652,13 @@ def main():
     parser.add_argument("--saida", default="saida", help="Pasta onde os relatorios serao gravados.")
     parser.add_argument("--limpar-base", action="store_true", help="Apaga somente o banco local antes de iniciar.")
     parser.add_argument(
+        "--reconstruir",
+        action="store_true",
+        help="Recoleta TODO o historico numa base temporaria e so substitui a base boa "
+             "quando a coleta termina inteira (troca atomica). Fechar a janela no meio nao "
+             "corrompe a base nem o painel anteriores.",
+    )
+    parser.add_argument(
         "--incremental",
         action="store_true",
         help="Le apenas mensagens desde a ultima coleta, com margem de dois dias para sincronizacoes tardias.",
@@ -667,11 +675,24 @@ def main():
     pasta_programa = Path(__file__).resolve().parent
     pasta_saida = (pasta_programa / args.saida).resolve()
     pasta_saida.mkdir(parents=True, exist_ok=True)
-    banco = pasta_saida / "outlook_atendimento.sqlite"
-    if args.limpar_base and banco.exists():
-        banco.unlink()
-    conn = sqlite3.connect(banco)
+    banco_final = pasta_saida / "outlook_atendimento.sqlite"
+
+    # Em --reconstruir, a coleta vai para uma base temporaria e so substitui a
+    # base boa apos terminar inteira. Assim, interromper a coleta (fechar a
+    # janela) nunca deixa a base/painel pela metade.
+    usar_staging = args.reconstruir and not args.somente_exportar
+    banco_coleta = (pasta_saida / "outlook_atendimento.rebuild.sqlite") if usar_staging else banco_final
+
+    # Remove sobras de uma reconstrucao anterior interrompida.
+    resto_staging = pasta_saida / "outlook_atendimento.rebuild.sqlite"
+    if usar_staging and resto_staging.exists():
+        resto_staging.unlink()
+    if args.limpar_base and not usar_staging and banco_final.exists():
+        banco_final.unlink()
+
+    conn = sqlite3.connect(banco_coleta)
     garantir_schema(conn)
+    swap_ok = False
     try:
         if not args.somente_exportar:
             namespace = abrir_outlook()
@@ -681,7 +702,8 @@ def main():
                 periodo += f" ate {args.ate}"
             print(f"Caixa selecionada: {caixa.DisplayName}; periodo: {periodo}.")
             limite_inicio = data_inicio
-            if args.incremental:
+            # Incremental so faz sentido sobre a base existente, nunca sobre staging.
+            if args.incremental and not usar_staging:
                 ultima = conn.execute("SELECT MAX(data_hora) FROM mensagens").fetchone()[0]
                 if ultima:
                     try:
@@ -694,6 +716,15 @@ def main():
             print("Varrendo todas as pastas da caixa (recebidos + enviados)...")
             coletar_caixa(conn, caixa, limite_inicio, data_fim)
 
+            if usar_staging:
+                # Troca atomica: so chega aqui se a coleta terminou por completo.
+                conn.commit()
+                conn.close()
+                os.replace(banco_coleta, banco_final)
+                swap_ok = True
+                print("Base reconstruida por completo (troca atomica concluida).")
+                conn = sqlite3.connect(banco_final)
+
         total, conversas, linhas_mensal = exportar(conn, pasta_saida)
         relatorio_validacao(linhas_mensal)
         print(f"\nPronto. {total:,} e-mails recebidos e {conversas:,} conversas analisadas.")
@@ -702,7 +733,17 @@ def main():
         print(f"\nERRO: {erro}", file=sys.stderr)
         return 2
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
+        # Coleta interrompida ou com falha antes da troca: descarta a base
+        # temporaria e preserva a base boa e o painel anteriores.
+        if usar_staging and not swap_ok and resto_staging.exists():
+            try:
+                resto_staging.unlink()
+            except OSError:
+                pass
         if OUTLOOK_DISPONIVEL and not args.somente_exportar:
             pythoncom.CoUninitialize()
 

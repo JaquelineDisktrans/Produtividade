@@ -35,6 +35,12 @@ def main():
     with sqlite3.connect(OUT / "outlook_atendimento.sqlite") as conn:
         recebidos_caixa = conn.execute("SELECT COUNT(*) FROM mensagens WHERE direcao='recebido'").fetchone()[0]
         enviados_caixa = conn.execute("SELECT COUNT(*) FROM mensagens WHERE direcao='enviado'").fetchone()[0]
+
+    # Trava de seguranca: nao sobrescreve um painel bom com uma base vazia
+    # (ex.: coleta interrompida). Preserva o dashboard_data.json anterior.
+    if recebidos_caixa == 0 and enviados_caixa == 0:
+        print("Base vazia; painel anterior preservado (nada foi sobrescrito).")
+        return
     respostas = [float(l["tempo_primeira_resposta_minutos"]) for l in linhas if l["tempo_primeira_resposta_minutos"] != ""]
     recebidos = [datetime.fromisoformat(l["data_inicial"]) for l in linhas]
     respondidos = sum(l["status_aparente"] == "Respondido" for l in linhas)

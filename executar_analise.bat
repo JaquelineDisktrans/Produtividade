@@ -19,10 +19,10 @@ if errorlevel 1 (
   )
 )
 echo.
-py -3.12 outlook_atendimento.py --caixa trocas@disktrans.com.br --limpar-base
+py -3.12 outlook_atendimento.py --caixa trocas@disktrans.com.br --reconstruir
 if errorlevel 1 (
   echo.
-  echo A coleta nao terminou. Nenhum relatorio foi gerado.
+  echo A coleta nao terminou. A base e o painel anteriores foram preservados.
   pause
   exit /b 1
 )
