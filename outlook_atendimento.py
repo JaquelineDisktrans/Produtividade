@@ -1,7 +1,15 @@
 """Gera indicadores de atendimento a partir do Outlook desktop.
 
-O programa somente le mensagens do Outlook. Nenhuma mensagem e enviada, movida
-ou alterada. Os dados intermediarios ficam em SQLite e os relatorios em CSV.
+O programa somente le mensagens do Outlook. Nenhuma mensagem e enviada, movida,
+marcada ou alterada. Os dados intermediarios ficam em SQLite e os relatorios em CSV.
+
+Correcoes importantes desta versao:
+- Sem piso de periodo artificial: por padrao coleta TODO o historico acessivel.
+  Use --desde/--ate apenas se quiser recortar.
+- Varre TODAS as pastas da caixa (subpastas de recebidos + Itens Enviados), e nao
+  somente a raiz da Caixa de Entrada. Assim e-mails ja arquivados em subpastas
+  voltam a ser contabilizados. Itens Excluidos, Lixo Eletronico, Rascunhos e Caixa
+  de Saida sao ignorados por padrao.
 """
 
 from __future__ import annotations
@@ -17,16 +25,25 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import mean
 
+# O win32com so existe no Windows com Outlook. A etapa de AGREGACAO/EXPORT nao
+# depende dele, entao a ausencia nao pode derrubar o modulo: apenas marcamos a
+# indisponibilidade e falhamos com mensagem clara quando a COLETA for chamada.
 try:
     import pythoncom
     import win32com.client
+    OUTLOOK_DISPONIVEL = True
 except ImportError:
-    print("Dependencia ausente: pywin32. Execute o arquivo executar_analise.bat.")
-    raise SystemExit(1)
+    pythoncom = None
+    win32com = None
+    OUTLOOK_DISPONIVEL = False
 
 
 OL_FOLDER_INBOX = 6
 OL_FOLDER_SENT_MAIL = 5
+OL_FOLDER_DELETED = 3
+OL_FOLDER_OUTBOX = 4
+OL_FOLDER_DRAFTS = 16
+OL_FOLDER_JUNK = 23
 OL_MAIL = 43
 CORPO_MAX_CHARS = 60000
 SCHEMA = """
@@ -107,6 +124,11 @@ def texto_do_item(item) -> str:
 
 
 def abrir_outlook():
+    if not OUTLOOK_DISPONIVEL:
+        raise RuntimeError(
+            "Dependencia ausente: pywin32/Outlook nao disponiveis neste ambiente. "
+            "A coleta so roda no Windows com o Outlook classico. Use executar_analise.bat."
+        )
     pythoncom.CoInitialize()
     try:
         # Em execucao pelo duplo clique, o Outlook e um processo interativo
@@ -149,12 +171,20 @@ def localizar_caixa(namespace, termo: str):
     )
 
 
-def restringir_itens_por_data(itens, campo_data: str, data_inicio: datetime | None):
-    """Tenta filtrar no próprio Outlook para que as atualizações sejam incrementais.
+def id_pasta_padrao(caixa, tipo: int) -> str | None:
+    """EntryID de uma pasta padrao da caixa (Inbox, Sent, Deleted...), se existir."""
+    try:
+        return caixa.GetDefaultFolder(tipo).EntryID
+    except Exception:
+        return None
 
-    O formato de data aceito pelo Outlook varia conforme o idioma da instalação.
-    A validação do primeiro item evita perder mensagens caso a instalação rejeite
-    o formato brasileiro; nesse cenário o coletor volta para a coleção original.
+
+def restringir_itens_por_data(itens, campo_data: str, data_inicio: datetime | None):
+    """Tenta filtrar no proprio Outlook para acelerar coletas incrementais.
+
+    O formato de data aceito pelo Outlook varia conforme o idioma da instalacao.
+    A validacao do primeiro item evita perder mensagens caso a instalacao rejeite
+    o formato brasileiro; nesse cenario o coletor volta para a colecao original.
     """
     if not data_inicio:
         return itens
@@ -162,9 +192,6 @@ def restringir_itens_por_data(itens, campo_data: str, data_inicio: datetime | No
         filtro = data_inicio.strftime("%d/%m/%Y %H:%M")
         filtrados = itens.Restrict(f"[{campo_data}] >= '{filtro}'")
         if filtrados.Count == 0:
-            # Se há item recente na coleção original, o filtro provavelmente não
-            # foi interpretado. Repetir a leitura completa é mais seguro que
-            # omitir mensagens novas.
             try:
                 ultimo = itens.Item(1)
                 data_ultimo = getattr(ultimo, campo_data).replace(tzinfo=None)
@@ -185,43 +212,63 @@ def restringir_itens_por_data(itens, campo_data: str, data_inicio: datetime | No
         return itens
 
 
-def coletar_pasta(conn: sqlite3.Connection, pasta, direcao: str, data_inicio: datetime | None):
-    """Le uma pasta, em streaming, e grava somente metadados essenciais."""
+def coletar_pasta(
+    conn: sqlite3.Connection,
+    pasta,
+    direcao: str,
+    data_inicio: datetime | None,
+    data_fim: datetime | None,
+    existentes: set,
+):
+    """Le uma pasta, em streaming, e grava somente metadados essenciais.
+
+    Percorre em ordem de data. Itens invalidos, sem assunto ou corrompidos nao
+    interrompem a execucao: sao contados como ignorados e o coletor segue.
+    """
     try:
         itens = pasta.Items
         campo_data = "[ReceivedTime]" if direcao == "recebido" else "[SentOn]"
         nome_campo_data = campo_data.strip("[]")
-        itens.Sort(campo_data, True)
+        # Ordem crescente de data (ponto 7: percorrer em ordem de data).
+        itens.Sort(campo_data, False)
         total_geral = itens.Count
         itens = restringir_itens_por_data(itens, nome_campo_data, data_inicio)
         total = itens.Count
-    except Exception as erro:
-        raise RuntimeError(f"Nao foi possivel ler a pasta {pasta.Name}.") from erro
+    except Exception:
+        # Pasta sem itens de e-mail (ex.: calendario/contatos) ou inacessivel.
+        return 0, 0
 
-    if total != total_geral:
-        print(f"Lendo {pasta.Name}: {total:,} itens na janela incremental (de {total_geral:,}).")
-    else:
-        print(f"Lendo {pasta.Name}: {total:,} itens encontrados.")
+    if total == 0:
+        return 0, 0
+
+    # Feedback para pastas grandes (ex.: Itens Enviados), evitando que a leitura
+    # pareca travada durante os minutos em que percorre milhares de itens.
+    if total >= 200:
+        print(f"  Lendo {pasta.Name} [{direcao}]: {total:,} itens...", flush=True)
+
     inseridos = 0
     ignorados = 0
     lote = []
-    existentes = {linha[0] for linha in conn.execute("SELECT entry_id FROM mensagens")}
-    # A colecao COM e indexada a partir de 1.
     for indice in range(1, total + 1):
         try:
+            if indice % 1000 == 0:
+                print(f"    {pasta.Name}: {indice:,}/{total:,}...", flush=True)
             item = itens.Item(indice)
-            if item.Class != OL_MAIL:
+            if getattr(item, "Class", None) != OL_MAIL:
                 ignorados += 1
                 continue
             entry_id = item.EntryID
             if entry_id in existentes:
                 continue
             data = item.ReceivedTime if direcao == "recebido" else item.SentOn
-            if data_inicio and data.replace(tzinfo=None) < data_inicio:
+            data_naive = data.replace(tzinfo=None)
+            if data_inicio and data_naive < data_inicio:
+                continue
+            if data_fim and data_naive > data_fim:
                 continue
             assunto = item.Subject or "(sem assunto)"
             conversa_id = (item.ConversationID or "").strip()
-            # Alguns itens nao possuem ConversationID. O assunto vira a chave de reserva.
+            # Sem ConversationID, o assunto normalizado vira chave de reserva.
             chave = conversa_id or "assunto:" + normalizar_assunto(assunto).casefold()
             try:
                 anexos = int(item.Attachments.Count)
@@ -242,33 +289,101 @@ def coletar_pasta(conn: sqlite3.Connection, pasta, direcao: str, data_inicio: da
                     texto_do_item(item),
                 )
             )
+            existentes.add(entry_id)
             if len(lote) >= 250:
-                conn.executemany(
-                    "INSERT OR IGNORE INTO mensagens "
-                    "(entry_id, direcao, conversa_id, assunto_original, assunto_normalizado, "
-                    "data_hora, remetente, destinatarios, cc, anexos, corpo_texto) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", lote
-                )
-                conn.commit()
+                _gravar_lote(conn, lote)
                 inseridos += len(lote)
-                existentes.update(linha[0] for linha in lote)
                 lote.clear()
-            if indice % 1000 == 0:
-                print(f"  {indice:,}/{total:,} lidos")
         except Exception:
-            # Itens corrompidos ou em sincronizacao nao impedem o restante da analise.
+            # Itens corrompidos ou em sincronizacao nao impedem o restante.
             ignorados += 1
     if lote:
-        conn.executemany(
-            "INSERT OR IGNORE INTO mensagens "
-            "(entry_id, direcao, conversa_id, assunto_original, assunto_normalizado, "
-            "data_hora, remetente, destinatarios, cc, anexos, corpo_texto) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", lote
-        )
-        conn.commit()
+        _gravar_lote(conn, lote)
         inseridos += len(lote)
-        existentes.update(linha[0] for linha in lote)
-    print(f"  Concluido: {inseridos:,} processados; {ignorados:,} ignorados.")
+    return inseridos, ignorados
+
+
+def _gravar_lote(conn: sqlite3.Connection, lote: list):
+    conn.executemany(
+        "INSERT OR IGNORE INTO mensagens "
+        "(entry_id, direcao, conversa_id, assunto_original, assunto_normalizado, "
+        "data_hora, remetente, destinatarios, cc, anexos, corpo_texto) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", lote
+    )
+    conn.commit()
+
+
+def coletar_caixa(
+    conn: sqlite3.Connection,
+    caixa,
+    data_inicio: datetime | None,
+    data_fim: datetime | None,
+):
+    """Varre TODAS as pastas relevantes da caixa (recursivo).
+
+    Classificacao:
+    - subtree de Itens Enviados -> 'enviado'
+    - demais pastas -> 'recebido'
+    Excluidas: Itens Excluidos, Lixo Eletronico, Rascunhos e Caixa de Saida.
+    """
+    id_enviados = id_pasta_padrao(caixa, OL_FOLDER_SENT_MAIL)
+    ids_excluir = {
+        id_pasta_padrao(caixa, OL_FOLDER_DELETED),
+        id_pasta_padrao(caixa, OL_FOLDER_OUTBOX),
+        id_pasta_padrao(caixa, OL_FOLDER_DRAFTS),
+        id_pasta_padrao(caixa, OL_FOLDER_JUNK),
+    }
+    ids_excluir.discard(None)
+
+    existentes = {linha[0] for linha in conn.execute("SELECT entry_id FROM mensagens")}
+    totais = {"recebido": 0, "enviado": 0}
+    ignorados_total = 0
+
+    try:
+        raiz = caixa.GetRootFolder()
+    except Exception as erro:
+        raise RuntimeError(f"Nao foi possivel abrir a caixa {caixa.DisplayName}.") from erro
+
+    pilha = [(raiz, None)]  # (pasta, direcao_forcada)
+    while pilha:
+        pasta, direcao_forcada = pilha.pop()
+        try:
+            eid = pasta.EntryID
+            nome = pasta.Name
+        except Exception:
+            continue
+        if eid in ids_excluir:
+            continue
+        direcao = direcao_forcada
+        if direcao is None:
+            direcao = "enviado" if eid == id_enviados else "recebido"
+
+        inseridos, ignorados = coletar_pasta(
+            conn, pasta, direcao, data_inicio, data_fim, existentes
+        )
+        if inseridos or ignorados:
+            print(f"  {nome} [{direcao}]: {inseridos:,} novos; {ignorados:,} ignorados.", flush=True)
+        totais[direcao] += inseridos
+        ignorados_total += ignorados
+
+        # Empilha subpastas; sob Enviados herda 'enviado'.
+        try:
+            subpastas = pasta.Folders
+            for i in range(1, subpastas.Count + 1):
+                try:
+                    sub = subpastas.Item(i)
+                except Exception:
+                    continue
+                heranca = "enviado" if direcao == "enviado" else None
+                pilha.append((sub, heranca))
+        except Exception:
+            pass
+
+    print(
+        f"Coleta concluida: {totais['recebido']:,} recebidos novos, "
+        f"{totais['enviado']:,} enviados novos, {ignorados_total:,} ignorados."
+    )
+    return totais
 
 
 def minutos_entre(inicio: str, fim: str) -> float:
@@ -320,7 +435,19 @@ def exportar_casos_para_analise(conn: sqlite3.Connection, pasta_saida: Path):
     return destino
 
 
+def _escrever_csv(caminho: Path, campos: list[str], linhas: list[dict]):
+    with caminho.open("w", newline="", encoding="utf-8-sig") as arquivo:
+        writer = csv.DictWriter(arquivo, fieldnames=campos, delimiter=";")
+        writer.writeheader()
+        writer.writerows(linhas)
+
+
 def exportar(conn: sqlite3.Connection, pasta_saida: Path):
+    """Constroi conversas, assuntos consolidados e resumo mensal.
+
+    Agrupamento por ConversationID (ponto 8). Todas as saidas de nivel de conversa
+    trazem colunas de periodo (mes_ano, ano, mes) para o front-end filtrar meses.
+    """
     registros = conn.execute(
         "SELECT conversa_id, direcao, assunto_original, assunto_normalizado, data_hora, remetente "
         "FROM mensagens ORDER BY conversa_id, data_hora"
@@ -339,10 +466,17 @@ def exportar(conn: sqlite3.Connection, pasta_saida: Path):
         respostas = [m for m in enviados if m[4] >= primeira[4]]
         resposta = respostas[0] if respostas else None
         minutos = minutos_entre(primeira[4], resposta[4]) if resposta else None
+        data_receb = primeira[4]
+        mes_ano = data_receb[:7]
         linhas_conversas.append({
             "conversa_id": chave,
-            "assunto": primeira[3],
-            "primeiro_email_recebido": primeira[4],
+            "assunto_original": primeira[2],
+            "assunto_consolidado": primeira[3],
+            "data_recebimento": data_receb,
+            "mes_ano": mes_ano,
+            "ano": data_receb[:4],
+            "mes": data_receb[5:7],
+            "primeiro_email_recebido": data_receb,
             "primeira_resposta_enviada": resposta[4] if resposta else "",
             "status": "Respondido" if resposta else "Sem resposta",
             "tempo_primeira_resposta_minutos": round(minutos, 2) if minutos is not None else "",
@@ -353,34 +487,74 @@ def exportar(conn: sqlite3.Connection, pasta_saida: Path):
         })
 
     linhas_conversas.sort(key=lambda linha: linha["primeiro_email_recebido"], reverse=True)
-    with (pasta_saida / "conversas.csv").open("w", newline="", encoding="utf-8-sig") as arquivo:
-        campos = list(linhas_conversas[0]) if linhas_conversas else ["conversa_id", "assunto", "status"]
-        writer = csv.DictWriter(arquivo, fieldnames=campos, delimiter=";")
-        writer.writeheader()
-        writer.writerows(linhas_conversas)
 
+    # conversas_detalhadas.csv (requerido) + conversas.csv (compat do pipeline atual)
+    campos_conv = list(linhas_conversas[0]) if linhas_conversas else [
+        "conversa_id", "assunto_consolidado", "data_recebimento", "mes_ano", "status"
+    ]
+    _escrever_csv(pasta_saida / "conversas_detalhadas.csv", campos_conv, linhas_conversas)
+    _escrever_csv(pasta_saida / "conversas.csv", campos_conv, linhas_conversas)
+
+    # assuntos_consolidados.csv (agregado por assunto)
     assuntos = defaultdict(list)
     for linha in linhas_conversas:
-        assuntos[linha["assunto"]].append(linha)
+        assuntos[linha["assunto_consolidado"]].append(linha)
     linhas_assuntos = []
     for assunto, linhas in assuntos.items():
         tempos = [float(l["tempo_primeira_resposta_minutos"]) for l in linhas if l["tempo_primeira_resposta_minutos"] != ""]
+        datas = sorted(l["data_recebimento"] for l in linhas)
         linhas_assuntos.append({
             "assunto_consolidado": assunto,
             "conversas": len(linhas),
             "emails_recebidos": sum(l["emails_recebidos"] for l in linhas),
             "respondidas": sum(l["status"] == "Respondido" for l in linhas),
             "sem_resposta": sum(l["status"] == "Sem resposta" for l in linhas),
+            "primeiro_mes": datas[0][:7],
+            "ultimo_mes": datas[-1][:7],
             "tempo_medio_primeira_resposta_minutos": round(mean(tempos), 2) if tempos else "",
             "tempo_medio_primeira_resposta_legivel": formatar_minutos(mean(tempos)) if tempos else "",
         })
     linhas_assuntos.sort(key=lambda linha: linha["conversas"], reverse=True)
-    with (pasta_saida / "assuntos_consolidados.csv").open("w", newline="", encoding="utf-8-sig") as arquivo:
-        campos = list(linhas_assuntos[0]) if linhas_assuntos else ["assunto_consolidado", "conversas"]
-        writer = csv.DictWriter(arquivo, fieldnames=campos, delimiter=";")
-        writer.writeheader()
-        writer.writerows(linhas_assuntos)
+    campos_ass = list(linhas_assuntos[0]) if linhas_assuntos else ["assunto_consolidado", "conversas"]
+    _escrever_csv(pasta_saida / "assuntos_consolidados.csv", campos_ass, linhas_assuntos)
 
+    # resumo_mensal.csv (uma linha por mes)
+    por_mes = defaultdict(list)
+    for linha in linhas_conversas:
+        por_mes[linha["mes_ano"]].append(linha)
+    # e-mails recebidos/enviados por mes direto da base (nao so de conversas com recebido)
+    recebidos_mes = dict(conn.execute(
+        "SELECT substr(data_hora,1,7), COUNT(*) FROM mensagens WHERE direcao='recebido' GROUP BY 1"
+    ).fetchall())
+    enviados_mes = dict(conn.execute(
+        "SELECT substr(data_hora,1,7), COUNT(*) FROM mensagens WHERE direcao='enviado' GROUP BY 1"
+    ).fetchall())
+    todos_meses = sorted(set(por_mes) | set(recebidos_mes) | set(enviados_mes))
+    linhas_mensal = []
+    for mes in todos_meses:
+        convs = por_mes.get(mes, [])
+        tempos = [float(l["tempo_primeira_resposta_minutos"]) for l in convs if l["tempo_primeira_resposta_minutos"] != ""]
+        respondidas = sum(l["status"] == "Respondido" for l in convs)
+        linhas_mensal.append({
+            "mes_ano": mes,
+            "ano": mes[:4],
+            "mes": mes[5:7],
+            "conversas": len(convs),
+            "emails_recebidos": recebidos_mes.get(mes, 0),
+            "emails_enviados": enviados_mes.get(mes, 0),
+            "respondidas": respondidas,
+            "sem_resposta": len(convs) - respondidas,
+            "tempo_medio_primeira_resposta_minutos": round(mean(tempos), 2) if tempos else "",
+            "tempo_medio_primeira_resposta_legivel": formatar_minutos(mean(tempos)) if tempos else "",
+        })
+    campos_mensal = [
+        "mes_ano", "ano", "mes", "conversas", "emails_recebidos", "emails_enviados",
+        "respondidas", "sem_resposta", "tempo_medio_primeira_resposta_minutos",
+        "tempo_medio_primeira_resposta_legivel",
+    ]
+    _escrever_csv(pasta_saida / "resumo_mensal.csv", campos_mensal, linhas_mensal)
+
+    # resumo.csv (compat: indicadores globais)
     total_recebidos = sum(1 for r in registros if r[1] == "recebido")
     total_enviados = sum(1 for r in registros if r[1] == "enviado")
     respondidas = sum(l["status"] == "Respondido" for l in linhas_conversas)
@@ -398,15 +572,77 @@ def exportar(conn: sqlite3.Connection, pasta_saida: Path):
         writer = csv.writer(arquivo, delimiter=";")
         writer.writerow(["indicador", "valor"])
         writer.writerows(resumo)
+
     exportar_casos_para_analise(conn, pasta_saida)
-    return total_recebidos, len(linhas_conversas)
+    return total_recebidos, len(linhas_conversas), linhas_mensal
+
+
+def mes_seguinte(mes: str) -> str:
+    ano, m = int(mes[:4]), int(mes[5:7])
+    if m == 12:
+        return f"{ano + 1}-01"
+    return f"{ano}-{m + 1:02d}"
+
+
+def relatorio_validacao(linhas_mensal: list[dict]):
+    """Relatorio de validacao por mes (ponto 12). Destaca meses sem registros."""
+    print("\n" + "=" * 60)
+    print("RELATORIO DE VALIDACAO - mensagens e conversas por mes")
+    print("=" * 60)
+    if not linhas_mensal:
+        print("Nenhum registro encontrado na base.")
+        return
+    print(f"{'Mes':<9}{'Conversas':>10}{'Recebidos':>11}{'Enviados':>10}")
+    print("-" * 60)
+    meses_presentes = {l["mes_ano"] for l in linhas_mensal}
+    indexado = {l["mes_ano"]: l for l in linhas_mensal}
+    primeiro = min(meses_presentes)
+    ultimo = max(meses_presentes)
+    # Percorre o intervalo continuo para revelar buracos (meses sem registros).
+    cursor = primeiro
+    meses_vazios = []
+    while cursor <= ultimo:
+        l = indexado.get(cursor)
+        if l is None:
+            print(f"{cursor:<9}{0:>10}{0:>11}{0:>10}   <== SEM REGISTROS")
+            meses_vazios.append(cursor)
+        else:
+            print(f"{l['mes_ano']:<9}{l['conversas']:>10}{l['emails_recebidos']:>11}{l['emails_enviados']:>10}")
+            if l["emails_recebidos"] == 0:
+                print(f"{'':<9}{'':>10}{'':>11}{'':>10}   <== SEM E-MAILS RECEBIDOS")
+        cursor = mes_seguinte(cursor)
+    print("-" * 60)
+    tot_conv = sum(l["conversas"] for l in linhas_mensal)
+    tot_rec = sum(l["emails_recebidos"] for l in linhas_mensal)
+    tot_env = sum(l["emails_enviados"] for l in linhas_mensal)
+    print(f"{'TOTAL':<9}{tot_conv:>10}{tot_rec:>11}{tot_env:>10}")
+    print(f"Periodo coberto: {primeiro} a {ultimo}.")
+    if meses_vazios:
+        print(f"ATENCAO: meses sem NENHUM registro: {', '.join(meses_vazios)}")
+    else:
+        print("Todos os meses do intervalo possuem registros.")
+    print("=" * 60)
+
+
+def _parse_data(valor: str | None, fim_do_dia: bool, parser) -> datetime | None:
+    if not valor:
+        return None
+    try:
+        d = datetime.strptime(valor, "%Y-%m-%d")
+        return d.replace(hour=23, minute=59, second=59) if fim_do_dia else d
+    except ValueError:
+        parser.error("As datas devem usar o formato AAAA-MM-DD, por exemplo 2026-01-01.")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Analisa atendimento no Outlook desktop.")
     parser.add_argument(
-        "--desde", default="2026-07-01",
-        help="Data inicial no formato AAAA-MM-DD. Padrao: 2026-07-01.",
+        "--desde", default=None,
+        help="Data inicial AAAA-MM-DD (opcional). Sem valor: coleta todo o historico acessivel.",
+    )
+    parser.add_argument(
+        "--ate", default=None,
+        help="Data final AAAA-MM-DD (opcional). Sem valor: ate a mensagem mais recente.",
     )
     parser.add_argument(
         "--caixa", default="trocas@disktrans.com.br",
@@ -417,13 +653,16 @@ def main():
     parser.add_argument(
         "--incremental",
         action="store_true",
-        help="Lê apenas mensagens desde a última coleta, com margem de dois dias para sincronizações tardias.",
+        help="Le apenas mensagens desde a ultima coleta, com margem de dois dias para sincronizacoes tardias.",
+    )
+    parser.add_argument(
+        "--somente-exportar",
+        action="store_true",
+        help="Nao acessa o Outlook: apenas reexporta CSVs e o relatorio a partir do banco local.",
     )
     args = parser.parse_args()
-    try:
-        data_inicio = datetime.strptime(args.desde, "%Y-%m-%d") if args.desde else None
-    except ValueError:
-        parser.error("--desde deve usar o formato AAAA-MM-DD, por exemplo 2026-01-01.")
+    data_inicio = _parse_data(args.desde, fim_do_dia=False, parser=parser)
+    data_fim = _parse_data(args.ate, fim_do_dia=True, parser=parser)
 
     pasta_programa = Path(__file__).resolve().parent
     pasta_saida = (pasta_programa / args.saida).resolve()
@@ -434,31 +673,29 @@ def main():
     conn = sqlite3.connect(banco)
     garantir_schema(conn)
     try:
-        namespace = abrir_outlook()
-        caixa = localizar_caixa(namespace, args.caixa)
-        print(f"Caixa selecionada: {caixa.DisplayName}; periodo: {args.desde} em diante.")
-        limites = {"recebido": data_inicio, "enviado": data_inicio}
-        if args.incremental:
-            for direcao in limites:
-                ultima = conn.execute(
-                    "SELECT MAX(data_hora) FROM mensagens WHERE direcao = ?", (direcao,)
-                ).fetchone()[0]
+        if not args.somente_exportar:
+            namespace = abrir_outlook()
+            caixa = localizar_caixa(namespace, args.caixa)
+            periodo = "todo o historico" if not data_inicio else f"{args.desde} em diante"
+            if data_fim:
+                periodo += f" ate {args.ate}"
+            print(f"Caixa selecionada: {caixa.DisplayName}; periodo: {periodo}.")
+            limite_inicio = data_inicio
+            if args.incremental:
+                ultima = conn.execute("SELECT MAX(data_hora) FROM mensagens").fetchone()[0]
                 if ultima:
                     try:
-                        limites[direcao] = max(
-                            data_inicio,
-                            datetime.fromisoformat(ultima) - timedelta(days=2),
-                        )
+                        base = datetime.fromisoformat(ultima) - timedelta(days=2)
+                        limite_inicio = max(base, data_inicio) if data_inicio else base
                     except ValueError:
                         pass
-            print(
-                "Modo incremental: recebidos desde "
-                f"{limites['recebido']:%Y-%m-%d %H:%M} e enviados desde "
-                f"{limites['enviado']:%Y-%m-%d %H:%M}."
-            )
-        coletar_pasta(conn, caixa.GetDefaultFolder(OL_FOLDER_INBOX), "recebido", limites["recebido"])
-        coletar_pasta(conn, caixa.GetDefaultFolder(OL_FOLDER_SENT_MAIL), "enviado", limites["enviado"])
-        total, conversas = exportar(conn, pasta_saida)
+                if limite_inicio:
+                    print(f"Modo incremental: coletando desde {limite_inicio:%Y-%m-%d %H:%M}.")
+            print("Varrendo todas as pastas da caixa (recebidos + enviados)...")
+            coletar_caixa(conn, caixa, limite_inicio, data_fim)
+
+        total, conversas, linhas_mensal = exportar(conn, pasta_saida)
+        relatorio_validacao(linhas_mensal)
         print(f"\nPronto. {total:,} e-mails recebidos e {conversas:,} conversas analisadas.")
         print(f"Abra a pasta de resultados: {pasta_saida}")
     except RuntimeError as erro:
@@ -466,7 +703,8 @@ def main():
         return 2
     finally:
         conn.close()
-        pythoncom.CoUninitialize()
+        if OUTLOOK_DISPONIVEL and not args.somente_exportar:
+            pythoncom.CoUninitialize()
 
 
 if __name__ == "__main__":

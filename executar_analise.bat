@@ -4,7 +4,7 @@ cd /d "%~dp0"
 echo.
 echo Analise de atendimento do Outlook
 echo Esta etapa apenas le os e-mails. Nada sera alterado no Outlook.
-echo Caixa: trocas@disktrans.com.br. Periodo: 01/07/2026 em diante.
+echo Caixa: trocas@disktrans.com.br. Periodo: todo o historico acessivel.
 echo O texto sera salvo localmente em casos_para_analise.jsonl para a analise completa.
 echo.
 py -3.12 -m pip show pywin32 >nul 2>&1
@@ -19,7 +19,7 @@ if errorlevel 1 (
   )
 )
 echo.
-py -3.12 outlook_atendimento.py --caixa trocas@disktrans.com.br --desde 2026-07-01 --limpar-base
+py -3.12 outlook_atendimento.py --caixa trocas@disktrans.com.br --limpar-base
 if errorlevel 1 (
   echo.
   echo A coleta nao terminou. Nenhum relatorio foi gerado.

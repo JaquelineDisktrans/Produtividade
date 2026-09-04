@@ -54,8 +54,6 @@ def main() -> int:
                 "outlook_atendimento.py",
                 "--caixa",
                 "trocas@disktrans.com.br",
-                "--desde",
-                "2026-07-01",
                 "--incremental",
             )
             executar(arquivo_log, "gerar_relatorio.py")
