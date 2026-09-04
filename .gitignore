@@ -1,5 +1,7 @@
 # Dados locais da caixa de e-mail (nao versionar)
-saida/
+# Usar saida/* (e nao saida/) para que a excecao abaixo funcione:
+# o git nao reinclui arquivos se a propria pasta estiver ignorada.
+saida/*
 __pycache__/
 *.py[cod]
 
