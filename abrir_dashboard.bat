@@ -10,7 +10,7 @@ if not exist "saida\dashboard_data.json" (
     exit /b 1
   )
 )
-start "" "http://localhost:8765/index.html"
-echo Dashboard aberto em http://localhost:8765/index.html
+start "" "http://localhost:8765/painel.html"
+echo Painel aberto em http://localhost:8765/painel.html
 echo Feche esta janela para encerrar o servidor local.
 py -3.12 -m http.server 8765
