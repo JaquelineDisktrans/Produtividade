@@ -34,6 +34,31 @@ def executar(arquivo_log, script: str, *argumentos: str):
         raise RuntimeError(f"{script} terminou com código {resultado.returncode}.")
 
 
+def publicar_online(arquivo_log):
+    """Envia o saida/dashboard_data.json ao GitHub. Nunca interrompe a atualização."""
+    script = ROOT / "publicar_dados.bat"
+    if not script.exists():
+        escrever_log(arquivo_log, "publicar_dados.bat ausente; publicação online ignorada.")
+        return
+    escrever_log(arquivo_log, "Publicando dados no GitHub...")
+    try:
+        resultado = subprocess.run(
+            [str(script)],
+            cwd=ROOT,
+            stdout=arquivo_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            shell=True,
+        )
+        if resultado.returncode != 0:
+            escrever_log(
+                arquivo_log,
+                f"Publicação retornou código {resultado.returncode} (ignorado).",
+            )
+    except Exception as erro:
+        escrever_log(arquivo_log, f"Publicação online ignorada: {erro}")
+
+
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     try:
@@ -58,6 +83,7 @@ def main() -> int:
             )
             executar(arquivo_log, "gerar_relatorio.py")
             executar(arquivo_log, "gerar_dashboard_data.py")
+            publicar_online(arquivo_log)
             escrever_log(arquivo_log, "Atualização concluída com sucesso.")
         return 0
     except Exception as erro:
