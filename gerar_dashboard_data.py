@@ -105,6 +105,17 @@ def main():
             for l in linhas
         ],
     }
+    # Anexa o acompanhamento de nao lidos da Caixa de Entrada, se existir.
+    nao_lidos_path = OUT / "nao_lidos.json"
+    if nao_lidos_path.exists():
+        try:
+            nl = json.loads(nao_lidos_path.read_text(encoding="utf-8"))
+            dias = nl.get("dias", {}) or {}
+            nl["historico"] = [dict(data=d, **dias[d]) for d in sorted(dias)]
+            dados["nao_lidos"] = nl
+        except Exception:
+            pass
+
     destino = OUT / "dashboard_data.json"
     destino.write_text(json.dumps(dados, ensure_ascii=False), encoding="utf-8")
     print(f"Dados do dashboard gerados em {destino}")

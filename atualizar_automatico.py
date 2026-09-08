@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -13,6 +14,10 @@ ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "saida"
 LOCK = OUT / ".atualizacao_em_andamento"
 LOG = OUT / "atualizacao.log"
+
+# Se uma rodada for interrompida, a trava fica para tras e bloquearia todas as
+# proximas. Passado esse tempo, consideramos a trava obsoleta e seguimos.
+TRAVA_OBSOLETA_SEGUNDOS = 2 * 60 * 60  # 2 horas
 
 
 def escrever_log(arquivo, mensagem: str):
@@ -32,6 +37,22 @@ def executar(arquivo_log, script: str, *argumentos: str):
     )
     if resultado.returncode != 0:
         raise RuntimeError(f"{script} terminou com código {resultado.returncode}.")
+
+
+def capturar_nao_lidos(arquivo_log, marco: str):
+    """Registra o volume de nao lidos. Nunca interrompe a atualização."""
+    try:
+        resultado = subprocess.run(
+            [sys.executable, str(ROOT / "nao_lidos.py"), "--marco", marco],
+            cwd=ROOT,
+            stdout=arquivo_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if resultado.returncode != 0:
+            escrever_log(arquivo_log, f"Captura de nao lidos retornou {resultado.returncode} (ignorado).")
+    except Exception as erro:
+        escrever_log(arquivo_log, f"Captura de nao lidos ignorada: {erro}")
 
 
 def publicar_online(arquivo_log):
@@ -61,11 +82,19 @@ def publicar_online(arquivo_log):
 
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
+    # Remove trava obsoleta de uma rodada anterior que foi interrompida, para
+    # não bloquear as próximas execuções indefinidamente.
+    if LOCK.exists():
+        try:
+            if time.time() - LOCK.stat().st_mtime > TRAVA_OBSOLETA_SEGUNDOS:
+                LOCK.unlink()
+        except OSError:
+            pass
     try:
         descritor = os.open(str(LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
-        # Uma execução anterior ainda está trabalhando; a próxima rodada do
-        # Agendador do Windows fará nova tentativa.
+        # Uma execução anterior ainda está trabalhando (trava recente); a próxima
+        # rodada do Agendador do Windows fará nova tentativa.
         return 0
 
     try:
@@ -82,6 +111,7 @@ def main() -> int:
                 "--incremental",
             )
             executar(arquivo_log, "gerar_relatorio.py")
+            capturar_nao_lidos(arquivo_log, "agora")
             executar(arquivo_log, "gerar_dashboard_data.py")
             publicar_online(arquivo_log)
             escrever_log(arquivo_log, "Atualização concluída com sucesso.")
